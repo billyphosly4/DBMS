@@ -14,14 +14,16 @@ let firebaseAuth = null;
 // credentials and can only access the narrow API routes defined below.
 try {
   const admin = require('firebase-admin');
-  // Preferred setup: set GOOGLE_APPLICATION_CREDENTIALS to serviceAccountKey.json.
-  // Alternatively, place serviceAccountKey.json beside server.js. Never put it in public/.
+  // Vercel setup: add FIREBASE_SERVICE_ACCOUNT as a server-only JSON environment variable.
+  // Local setup: set GOOGLE_APPLICATION_CREDENTIALS or keep serviceAccountKey.json beside server.js.
   const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || path.join(__dirname, 'serviceAccountKey.json');
-  if (fs.existsSync(keyPath)) {
-    const serviceAccount = JSON.parse(fs.readFileSync(keyPath, 'utf8'));
-    admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
-    firestore = admin.firestore();
-    firebaseAuth = admin.auth();
+  const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
+    ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
+    : fs.existsSync(keyPath) ? JSON.parse(fs.readFileSync(keyPath, 'utf8')) : null;
+  if (serviceAccount) {
+    const firebaseApp = admin.apps.length ? admin.app() : admin.initializeApp({ credential: admin.credential.cert(serviceAccount) });
+    firestore = firebaseApp ? admin.firestore() : null;
+    firebaseAuth = firebaseApp ? admin.auth() : null;
   } else {
     firestoreError = 'Firestore credentials are not configured.';
   }
@@ -132,4 +134,8 @@ app.post('/api/orders', requireAdmin, async (request, response) => {
   }
 });
 
-app.listen(port, () => console.log(`Northstar dashboard running at http://localhost:${port}`));
+if (require.main === module) {
+  app.listen(port, () => console.log(`Northstar dashboard running at http://localhost:${port}`));
+}
+
+module.exports = app;

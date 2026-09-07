@@ -4,7 +4,7 @@ const express = require('express');
 
 const app = express();
 const port = process.env.PORT || 3000;
-const applicantsCollection = 'agency_applicants';
+const applicantsCollection = 'euro_applicants';
 const auditCollection = 'adminAudit';
 const streamClients = new Set();
 let firestore = null;
@@ -49,8 +49,10 @@ function serializeApplicant(document) {
     targetRole: data.targetRole || data.productName || '',
     documentUrl: data.documentUrl || data.attachedDocuments || data.documents || data.files || '',
     attachedDocuments: data.attachedDocuments || data.documentUrl || data.documents || data.files || '',
-    tier: data.tier || data.talentClassification || data.classification || '',
-    talentClassification: data.talentClassification || data.tier || data.classification || '',
+    destinationCountry: data.destinationCountry || '',
+    serviceFee: Number.isFinite(Number(data.serviceFee)) ? Number(data.serviceFee) : 0,
+    paymentStatus: data.paymentStatus || 'Unpaid Deposit',
+    languageProficiency: data.languageProficiency || 'No Certificate',
     timestamp,
     createdAt: data.createdAt || timestamp,
     updatedAt: data.updatedAt || null,
@@ -133,7 +135,7 @@ app.get(['/api/applicants/stream', '/api/live-stream'], async (request, response
   request.on('close', () => streamClients.delete(response));
 });
 
-// Persist the dashboard payload directly to the agency_applicants collection.
+// Persist migration-ready candidate profiles directly to euro_applicants.
 app.post(['/api/applicants', '/api/orders'], requireAdmin, async (request, response) => {
   if (!firestore) return response.status(503).json({ error: firestoreError || 'Firestore is unavailable.' });
   const body = request.body || {};
@@ -141,11 +143,14 @@ app.post(['/api/applicants', '/api/orders'], requireAdmin, async (request, respo
     applicantName: String(body.applicantName || body.customerName || '').trim(),
     targetRole: String(body.targetRole || '').trim(),
     documentUrl: String(body.documentUrl || '').trim(),
-    tier: String(body.tier || body.talentClassification || '').trim(),
+    destinationCountry: String(body.destinationCountry || '').trim(),
+    serviceFee: Number.isFinite(Number(body.serviceFee)) ? Number(body.serviceFee) : 0,
+    paymentStatus: String(body.paymentStatus || 'Unpaid Deposit').trim(),
+    languageProficiency: String(body.languageProficiency || 'No Certificate').trim(),
     timestamp: admin.firestore.FieldValue.serverTimestamp(),
   };
-  if (!applicant.applicantName || !applicant.targetRole || !applicant.documentUrl || !applicant.tier) {
-    return response.status(400).json({ error: 'Applicant name, target role, documents, and classification are required.' });
+  if (!applicant.applicantName || !applicant.targetRole || !applicant.documentUrl || !applicant.destinationCountry) {
+    return response.status(400).json({ error: 'Applicant name, target role, document, and destination country are required.' });
   }
   try {
     const document = await firestore.collection(applicantsCollection).add(applicant);

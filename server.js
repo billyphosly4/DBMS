@@ -10,11 +10,12 @@ const streamClients = new Set();
 let firestore = null;
 let firebaseAuth = null;
 let firestoreError = null;
+let admin = null;
 
 // The server is the protected intermediary between the browser and Firestore.
 // Service-account credentials never leave this process or appear in public/.
 try {
-  const admin = require('firebase-admin');
+  admin = require('firebase-admin');
   const keyPath = process.env.GOOGLE_APPLICATION_CREDENTIALS || path.join(__dirname, 'serviceAccountKey.json');
   const serviceAccount = process.env.FIREBASE_SERVICE_ACCOUNT
     ? JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT)
@@ -41,13 +42,17 @@ app.get('/', (request, response) => response.sendFile(path.join(__dirname, 'publ
 
 function serializeApplicant(document) {
   const data = document.data ? document.data() : document;
+  const timestamp = data.timestamp || data.createdAt || null;
   return {
     id: document.id || data.id,
     applicantName: data.applicantName || data.customerName || '',
     targetRole: data.targetRole || data.productName || '',
-    attachedDocuments: data.attachedDocuments || data.documents || data.files || '',
-    talentClassification: data.talentClassification || data.classification || data.tier || '',
-    createdAt: data.createdAt || null,
+    documentUrl: data.documentUrl || data.attachedDocuments || data.documents || data.files || '',
+    attachedDocuments: data.attachedDocuments || data.documentUrl || data.documents || data.files || '',
+    tier: data.tier || data.talentClassification || data.classification || '',
+    talentClassification: data.talentClassification || data.tier || data.classification || '',
+    timestamp,
+    createdAt: data.createdAt || timestamp,
     updatedAt: data.updatedAt || null,
   };
 }
@@ -83,16 +88,14 @@ async function recordAudit(action, applicantId, user, metadata = {}) {
 }
 
 function pushApplicants(event, applicants) {
-  const message = `event: ${event}\ndata: ${JSON.stringify({ source: 'firestore', applicants })}\n\n`;
+  const message = `event: ${event}\ndata: ${JSON.stringify({ source: 'firestore', applicants, totalApplicants: applicants.length })}\n\n`;
   for (const client of streamClients) client.write(message);
 }
 
 function startApplicantStream() {
   if (!firestore) return;
-  firestore.collection(applicantsCollection).onSnapshot((snapshot) => {
-    const applicants = snapshot.docs
-      .map(serializeApplicant)
-      .sort((first, second) => (second.createdAt?._seconds || 0) - (first.createdAt?._seconds || 0));
+  firestore.collection(applicantsCollection).orderBy('timestamp', 'desc').onSnapshot((snapshot) => {
+    const applicants = snapshot.docs.map(serializeApplicant);
     pushApplicants('applicants', applicants);
   }, (error) => {
     console.error('Firestore applicant stream failed:', error.message);
@@ -102,19 +105,21 @@ function startApplicantStream() {
 
 startApplicantStream();
 
-app.get('/api/applicants', requireAdmin, async (request, response) => {
+// Read the applicant queue in the same chronological order used by the live stream.
+app.get(['/api/applicants', '/api/orders'], requireAdmin, async (request, response) => {
   if (!firestore) return response.status(503).json({ error: firestoreError || 'Firestore is unavailable.' });
   try {
-    const snapshot = await firestore.collection(applicantsCollection).limit(100).get();
-    const applicants = snapshot.docs.map(serializeApplicant).sort((first, second) => (second.createdAt?._seconds || 0) - (first.createdAt?._seconds || 0));
-    return response.json({ source: 'firestore', applicants });
+    const snapshot = await firestore.collection(applicantsCollection).orderBy('timestamp', 'desc').limit(100).get();
+    const applicants = snapshot.docs.map(serializeApplicant);
+    return response.json({ source: 'firestore', applicants, totalApplicants: applicants.length });
   } catch (error) {
     console.error('GET /api/applicants failed:', error.message);
     return response.status(500).json({ error: 'Unable to fetch applicant profiles.' });
   }
 });
 
-app.get('/api/applicants/stream', async (request, response) => {
+// Stream the complete ordered applicant set, including the hosted Uploadcare URL.
+app.get(['/api/applicants/stream', '/api/live-stream'], async (request, response) => {
   const user = await verifyToken(request);
   if (!user) return response.status(401).end('Administrator authentication is required.');
   if (!firestore) return response.status(503).end(firestoreError || 'Firestore is unavailable.');
@@ -128,24 +133,24 @@ app.get('/api/applicants/stream', async (request, response) => {
   request.on('close', () => streamClients.delete(response));
 });
 
-app.post('/api/applicants', requireAdmin, async (request, response) => {
+// Persist the dashboard payload directly to the agency_applicants collection.
+app.post(['/api/applicants', '/api/orders'], requireAdmin, async (request, response) => {
   if (!firestore) return response.status(503).json({ error: firestoreError || 'Firestore is unavailable.' });
   const body = request.body || {};
   const applicant = {
     applicantName: String(body.applicantName || body.customerName || '').trim(),
-    targetRole: String(body.targetRole || body.productName || '').trim(),
-    attachedDocuments: String(body.attachedDocuments || body.documents || body.files || '').trim(),
-    talentClassification: String(body.talentClassification || body.tier || body.classification || '').trim(),
-    createdAt: new Date(),
-    updatedAt: new Date(),
+    targetRole: String(body.targetRole || '').trim(),
+    documentUrl: String(body.documentUrl || '').trim(),
+    tier: String(body.tier || body.talentClassification || '').trim(),
+    timestamp: admin.firestore.FieldValue.serverTimestamp(),
   };
-  if (!applicant.applicantName || !applicant.targetRole || !applicant.attachedDocuments || !applicant.talentClassification) {
+  if (!applicant.applicantName || !applicant.targetRole || !applicant.documentUrl || !applicant.tier) {
     return response.status(400).json({ error: 'Applicant name, target role, documents, and classification are required.' });
   }
   try {
     const document = await firestore.collection(applicantsCollection).add(applicant);
     await recordAudit('applicant_created', document.id, request.user, { applicantName: applicant.applicantName, targetRole: applicant.targetRole });
-    return response.status(201).json({ id: document.id, ...applicant });
+    return response.status(201).json({ id: document.id, ...applicant, timestamp: null });
   } catch (error) {
     console.error('POST /api/applicants failed:', error.message);
     return response.status(500).json({ error: 'Unable to ingest applicant profile.' });

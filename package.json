@@ -1,0 +1,15 @@
+{
+  "name": "northstar-commerce-dashboard",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Express and Firestore commerce admin dashboard demo",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.2",
+    "firebase-admin": "^13.0.2"
+  }
+}
